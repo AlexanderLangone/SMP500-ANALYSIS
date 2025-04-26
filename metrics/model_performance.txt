@@ -1,0 +1,2 @@
+LR R^2 on 1Y return: 0.109
+Logistic accuracy: 0.928
