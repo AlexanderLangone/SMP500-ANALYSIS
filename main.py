@@ -3,16 +3,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import matplotlib.patches as mpatches
+import sys
+sys.dont_write_bytecode = True
 
-from models.exponential_model import fit_exponential_model, exponential
-from models.logarithmic_model import fit_logarithmic_model, logarithmic
+
 from models.cyclical_model import fit_cyclical_model
 from models.power_law_model import fit_power_law_model, power_law
 
 from data_downloader import (download_sp500_data, download_gdp_data,
                              download_recession_data)
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.model_selection import train_test_split
 
 # ── Directories ─────────────────────────────────────────────────────────────
@@ -166,18 +166,16 @@ sp_model = sp
 x = sp_model["Days"].values / 3650.0  # decades
 y = sp_model["Close"].values
 
-exp_params = fit_exponential_model(x, y)
-log_params = fit_logarithmic_model(x, y)
 cyc_params = fit_cyclical_model(x, y)
 power_params = fit_power_law_model(x, y)
-lin_model = LinearRegression().fit(x.reshape(-1, 1), y)
+
+# Simple linear regression using y = mx + b
+price_m, price_b = np.polyfit(x, y, 1)  # Store price trend coefficients separately
+y_lin_fit = price_m * x + price_b
 
 # in-sample predictions
-y_exp_fit = exponential(x, *exp_params)
-y_log_fit = logarithmic(x, *log_params)
 y_cyc_fit = np.sum([c * x**i for i, c in enumerate(cyc_params)], axis=0)
 y_power_fit = power_law(x, *power_params)
-y_lin_fit = lin_model.predict(x.reshape(-1, 1))
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -190,8 +188,6 @@ def compute_metrics(y_true, y_pred):
 
 
 metrics_full = {
-    "Exponential": compute_metrics(y, y_exp_fit),
-    "Logarithmic": compute_metrics(y, y_log_fit),
     "Cyclical": compute_metrics(y, y_cyc_fit),
     "PowerLaw": compute_metrics(y, y_power_fit),
     "Linear": compute_metrics(y, y_lin_fit),
@@ -202,8 +198,8 @@ mask10 = sp_model["Date"] >= cutoff
 metrics_10 = {
     name: compute_metrics(y[mask10], preds[mask10])
     for name, preds in
-    zip(["Exponential", "Logarithmic", "Cyclical", "PowerLaw", "Linear"],
-        [y_exp_fit, y_log_fit, y_cyc_fit, y_power_fit, y_lin_fit])
+    zip(["Cyclical", "PowerLaw", "Linear"],
+        [y_cyc_fit, y_power_fit, y_lin_fit])
 }
 
 # Save metrics to CSV
@@ -225,9 +221,9 @@ print("\n=== Full History Performance ===")
 for name, (rmse, mae, r2) in metrics_full.items():
     print(f"{name:12s} RMSE={rmse:,.2f} MAE={mae:,.2f} R²={r2:.4f}")
 
-print("\n=== Recent Performance (Last 10 Years) ===")
-for name, (rmse, mae, r2) in metrics_10.items():
-    print(f"{name:12s} RMSE={rmse:,.2f} MAE={mae:,.2f} R²={r2:.4f}")
+# print("\n=== Recent Performance (Last 10 Years) ===")
+# for name, (rmse, mae, r2) in metrics_10.items():
+#     print(f"{name:12s} RMSE={rmse:,.2f} MAE={mae:,.2f} R²={r2:.4f}")
 
 # ── Load & Align GDP & Recession ───────────────────────────────────────────────
 gdp = pd.read_csv(os.path.join(DATA_DIR, "gdp.csv"),
@@ -291,22 +287,30 @@ print("Neutral = Ratio is within 1 SD of Expanding Mean ")
 print("=" * 80)
 
 # ── Regression & Recession Models ─────────────────────────────────────────────
+# Simple linear regression using y = mx + b
 feat = df.dropna(subset=["Return1Y"])
-X = feat[["Ratio", "Close"]].values
-y1 = feat["Return1Y"].values
-Xtr, Xte, ytr, yte = train_test_split(X, y1, test_size=0.2, random_state=42)
-lr = LinearRegression().fit(Xtr, ytr)
-lr_r2 = lr.score(Xte, yte)
+x_vals = feat["Ratio"].values
+y_vals = feat["Return1Y"].values
+
+# Calculate slope (m) and intercept (b)
+n = len(x_vals)
+mean_x = np.mean(x_vals)
+mean_y = np.mean(y_vals)
+m = np.sum((x_vals - mean_x) * (y_vals - mean_y)) / np.sum((x_vals - mean_x)**2)
+b = mean_y - m * mean_x
+
+# Calculate R-squared
+y_pred = m * x_vals + b
+ss_res = np.sum((y_vals - y_pred) ** 2)
+ss_tot = np.sum((y_vals - mean_y) ** 2)
+lr_r2 = 1 - (ss_res / ss_tot)
 
 df["Ratio_Lag1Y"] = df["Ratio"].shift(252)
 rc = df.dropna(subset=["Ratio_Lag1Y"])
-Xr, yr = rc[["Ratio_Lag1Y"]].values, rc["Recession"].values
-Xr_tr, Xr_te, yr_tr, yr_te = train_test_split(Xr,
-                                              yr,
-                                              test_size=0.2,
-                                              random_state=42)
-lg = LogisticRegression().fit(Xr_tr, yr_tr)
-log_acc = lg.score(Xr_te, yr_te)
+# Simple threshold-based classification
+ratio_threshold = rc["Ratio_Lag1Y"].mean() + rc["Ratio_Lag1Y"].std()
+predictions = (rc["Ratio_Lag1Y"] > ratio_threshold).astype(int)
+log_acc = np.mean(predictions == rc["Recession"])
 
 # Save regression performance
 with open(os.path.join(METRICS_DIR, "model_performance.txt"), "w") as f:
@@ -332,26 +336,22 @@ print("Undervalued: {:.2f}%, Neutral: {:.2f}%, Overvalued: {:.2f}%".format(
 future = pd.date_range(start=end_date, end=proj_end_date, freq="D")
 fdays_array = np.array((future - start_date).days / 3650.0)
 
-y_e_f = exponential(fdays_array, *exp_params)
-y_l_f = logarithmic(fdays_array, *log_params)
 y_c_f = np.sum([c * fdays_array**i for i, c in enumerate(cyc_params)], axis=0)
 y_p_f = power_law(fdays_array, *power_params)
-y_l_flin = lin_model.predict(fdays_array.reshape(-1, 1))
+
+# Calculate linear forecast using price trend coefficients
+y_l_f = price_m * fdays_array + price_b
 
 fig, ax = plt.subplots(figsize=(12, 6))
 ax.plot(df.index, df["Close"], label="Actual", alpha=0.5)
-ax.plot(sp_model["Date"], y_exp_fit, label="Exp Fit")
-ax.plot(sp_model["Date"], y_log_fit, label="Log Fit")
 ax.plot(sp_model["Date"], y_cyc_fit, label="Cyc Fit")
 ax.plot(sp_model["Date"], y_power_fit, label="Power Fit")
 ax.plot(sp_model["Date"], y_lin_fit, label="Linear Fit")
 
 # forecasts for each fit
-ax.plot(future, y_e_f, "--", label="Exp Forecast")
-ax.plot(future, y_l_f, "--", label="Log Forecast")
 ax.plot(future, y_c_f, "--", label="Cyc Forecast")
 ax.plot(future, y_p_f, "--", label="Power Forecast")
-ax.plot(future, y_l_flin, "--", label="Linear Forecast")
+ax.plot(future, y_l_f, "--", label="Linear Forecast")
 
 ymin, ymax = ax.get_ylim()
 ax.fill_between(df.index,
@@ -363,8 +363,7 @@ ax.fill_between(df.index,
 ax.set_title("S&P 500 Models & Forecast with Recessions")
 ax.set_xlabel("Date")
 ax.set_ylabel("Index Level")
-ymax = max(max(y_e_f), max(y_l_f), max(y_c_f), max(y_p_f),
-           max(y_l_flin)) * 1.1  # Add 10% padding
+ymax = max(max(y_c_f), max(y_p_f), max(y_l_f)) * 1.1  # Add 10% padding
 ax.set_ylim(0, ymax)
 ax.legend(loc="upper left")
 fig.autofmt_xdate()
@@ -377,11 +376,9 @@ pred_days = (end_date - start_date).days
 pred_x = pred_days / 3650.0
 
 # model predictions
-exp_pred = exponential(pred_x, *exp_params)
-log_pred = logarithmic(pred_x, *log_params)
 cyc_pred = sum(c * pred_x**i for i, c in enumerate(cyc_params))
 power_pred = power_law(pred_x, *power_params)
-lin_pred = lin_model.predict([[pred_x]])[0]
+lin_pred = m * pred_x + b
 
 # last observed actual
 last_price = sp_model["Close"].iloc[-1]
@@ -394,4 +391,3 @@ from analysis.portfolio_growth import analyze_portfolio_growth
 
 portfolio_results = analyze_portfolio_growth(df,
                                              initial_capital=initial_capital)
-

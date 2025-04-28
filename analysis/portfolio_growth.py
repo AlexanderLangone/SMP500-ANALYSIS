@@ -122,6 +122,9 @@ def analyze_portfolio_growth(df,
         1,  # Shift signal to avoid look-ahead bias
         df['Close'].pct_change(),
         0)
+    
+    # Ensure first return is 0 to start at initial capital
+    df.loc[df.index[0], 'Abs_Mom_Cash_Returns'] = 0
 
     # Calculate portfolio value
     df['Abs_Mom_Cash_Portfolio'] = initial_capital * (
@@ -136,6 +139,9 @@ def analyze_portfolio_growth(df,
         df['Abs_Mom_Bond_Signal'].shift(1) == 1,
         df['Close'].pct_change(),  # Market returns when signal is 1
         daily_bond_return)  # Bond returns when signal is 0
+    
+    # Ensure first return is 0 to start at initial capital
+    df.loc[df.index[0], 'Abs_Mom_Bond_Returns'] = 0
     df['Abs_Mom_Bond_Portfolio'] = initial_capital * (
         1 + df['Abs_Mom_Bond_Returns']).cumprod()
 
@@ -164,8 +170,56 @@ def analyze_portfolio_growth(df,
             daily_bond_return,  # Bond returns
             0  # Cash returns
         ))
+    # Ensure first return is 0 to start at initial capital
+    df.loc[df.index[0], 'Dual_Mom_Returns'] = 0
     df['Dual_Mom_Portfolio'] = initial_capital * (
         1 + df['Dual_Mom_Returns']).cumprod()
+
+    # Plot Dual Momentum strategy
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[2, 1])
+
+    # Plot portfolio value
+    ax1.plot(df.index, df['Dual_Mom_Portfolio'], label='Dual Momentum (1.25x)', color='purple')
+    ax1.set_title('Dual Momentum (1.25x) Strategy Performance')
+    ax1.set_ylabel('Portfolio Value')
+    format_y_axis(ax1)
+    
+    # Calculate min/max based on portfolio values relative to initial capital
+    port_min = df['Dual_Mom_Portfolio'].min()
+    port_max = df['Dual_Mom_Portfolio'].max()
+    padding = (port_max - port_min) * 0.1
+    y_min = max(0, port_min - padding)  # Don't go below 0
+    y_max = port_max + padding
+    
+    ax1.set_ylim(y_min, y_max)
+    ax1.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='Initial Investment')
+    ax1.legend(loc='upper left')
+    ax1.grid(True)
+
+    # Plot price and signals
+    ax2.plot(df.index, df['Close'], color='gray', alpha=0.6, label='S&P 500')
+
+    # Plot signals for state changes
+    leverage_signals = df[df['Dual_Mom_Signal'] == 1.25].index  # Leveraged SP500
+    bond_signals = df[df['Dual_Mom_Signal'] == 1].index  # Bonds
+    cash_signals = df[df['Dual_Mom_Signal'] == 0].index  # Cash
+
+    ax2.scatter(leverage_signals, df.loc[leverage_signals, 'Close'],
+                color='green', marker='^', s=100, label='Enter Leveraged SP500')
+    ax2.scatter(bond_signals, df.loc[bond_signals, 'Close'],
+                color='blue', marker='v', s=100, label='Switch to Bonds')
+    ax2.scatter(cash_signals, df.loc[cash_signals, 'Close'],
+                color='red', marker='v', s=100, label='Switch to Cash')
+
+    ax2.set_title('Strategy Signals')
+    ax2.set_xlabel('Date')
+    ax2.set_ylabel('S&P 500 Price')
+    ax2.legend(loc='upper left')
+    ax2.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/dual_momentum_performance.png')
+    plt.close()
 
     # Calculate metrics for all strategies
     def calculate_strategy_metrics(signals, returns, portfolio):

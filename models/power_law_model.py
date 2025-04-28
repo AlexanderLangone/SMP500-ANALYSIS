@@ -9,6 +9,6 @@ def fit_power_law_model(x, y):
     popt, _ = curve_fit(
         power_law, x, y,
         maxfev=10000,
-        bounds=([0, -np.inf], [np.inf, np.inf])
+        bounds=([y[0], -np.inf], [np.inf, np.inf])  # Set lower bound of a to initial price
     )
     return popt
